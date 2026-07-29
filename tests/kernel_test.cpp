@@ -19,6 +19,7 @@
 #include <unistd.h>
 
 #include <android-base/properties.h>
+#include <android-base/strings.h>
 #include <gtest/gtest.h>
 #include <vintf/VintfObject.h>
 
@@ -26,7 +27,8 @@
 #include <string>
 #include <unordered_set>
 
-#include "bpf/KernelUtils.h"
+#define BPF_UTILS_MORE_IS_FOO_HELPERS
+#include "bpf/BpfUtils.h"
 
 namespace android {
 namespace net {
@@ -80,10 +82,6 @@ class KernelConfigVerifier final {
     std::shared_ptr<const RuntimeInfo> mRuntimeInfo;
     std::unordered_set<std::string> mLoadedModules;
 };
-
-bool isCuttlefish() {
-    return GetProperty("ro.product.board", "") == "cutf";
-}
 
 }  // namespace
 
@@ -155,7 +153,6 @@ TEST(KernelTest, TestChar16IsLockFree) {
         char name[16];
     } IfaceValue;
 
-    // Known to currently fail on RiscV, likely needs better compiler/libraries.
     ASSERT_TRUE(std::atomic<IfaceValue>::is_always_lock_free);
 }
 
@@ -183,11 +180,12 @@ static bool isGSI() {
     ASSERT_TRUE(bpf::isAtLeastKernelVersion((major), (minor), (sub))); \
 } while (0)
 
-TEST(KernelTest, TestMinRequiredLTS_5_10) { ifIsKernelThenMinLTS(5, 10, 210); }
-TEST(KernelTest, TestMinRequiredLTS_5_15) { ifIsKernelThenMinLTS(5, 15, 149); }
-TEST(KernelTest, TestMinRequiredLTS_6_1)  { ifIsKernelThenMinLTS(6, 1, 78); }
-TEST(KernelTest, TestMinRequiredLTS_6_6)  { ifIsKernelThenMinLTS(6, 6, 30); }
-TEST(KernelTest, TestMinRequiredLTS_6_12) { ifIsKernelThenMinLTS(6, 12, 13); }
+TEST(KernelTest, TestMinRequiredLTS_5_10) { ifIsKernelThenMinLTS(5, 10, 236); }
+TEST(KernelTest, TestMinRequiredLTS_5_15) { ifIsKernelThenMinLTS(5, 15, 178); }
+TEST(KernelTest, TestMinRequiredLTS_6_1)  { ifIsKernelThenMinLTS(6, 1, 128); }
+TEST(KernelTest, TestMinRequiredLTS_6_6)  { ifIsKernelThenMinLTS(6, 6, 77); }
+TEST(KernelTest, TestMinRequiredLTS_6_12) { ifIsKernelThenMinLTS(6, 12, 23); }
+TEST(KernelTest, TestMinRequiredLTS_6_18) { ifIsKernelThenMinLTS(6, 18, 9); }
 
 TEST(KernelTest, TestSupportsAcceptRaMinLft) {
     if (isGSI()) GTEST_SKIP() << "Meaningless on GSI due to ancient kernels.";
@@ -218,8 +216,7 @@ TEST(KernelTest, TestSupportsCommonUsbEthernetDongles) {
     EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_CDCETHER"));
     EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_CDC_EEM"));
     EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_CDC_NCM"));
-    if (bpf::isAtLeastKernelVersion(5, 4, 0))
-        EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_AQC111"));
+    EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_NET_AQC111"));
 
     EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_RTL8152"));
     EXPECT_TRUE(configVerifier.hasModule("CONFIG_USB_RTL8150"));
@@ -237,7 +234,15 @@ TEST(KernelTest, TestSupportsCommonUsbEthernetDongles) {
 TEST(KernelTest, TestSupportsUsbCdcHost) {
     KernelConfigVerifier configVerifier;
     // TODO: Load these modules on cuttlefish.
-    if (isCuttlefish()) GTEST_SKIP() << "Exempt on cuttlefish";
+    if (bpf::isCuttlefish) GTEST_SKIP() << "Exempt on cuttlefish";
+
+    // All desktop devices use kernel uevents for module autoloading,
+    // thus support for USB ethernet dongles is already verified by
+    // the KernelTest#TestSupportsCommonUsbEthernetDongles.
+    if (bpf::isDesktop) GTEST_SKIP() << "Exempt on desktop device";
+
+    // No need for usb ethernet dongle drivers on watches
+    if (bpf::isWear()) GTEST_SKIP() << "Exempt on wear device";
 
     EXPECT_TRUE(configVerifier.isAvailable("CONFIG_USB_NET_CDC_NCM", "cdc_ncm"));
     EXPECT_TRUE(configVerifier.isAvailable("CONFIG_USB_NET_CDC_EEM", "cdc_eem"));

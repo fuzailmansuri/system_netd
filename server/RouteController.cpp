@@ -36,9 +36,13 @@
 #include <android-base/file.h>
 #include <android-base/stringprintf.h>
 #include <android-base/strings.h>
+#include <android_net_platform_flags.h>
+
 #include "log/log.h"
 #include "netid_client.h"
 #include "netutils/ifc.h"
+
+namespace netflags = android::net::platform::flags;
 
 using android::base::StartsWith;
 using android::base::StringPrintf;
@@ -52,12 +56,8 @@ auto RouteController::ifNameToIndexFunction = if_nametoindex;
 // BEGIN CONSTANTS --------------------------------------------------------------------------------
 
 const uint32_t ROUTE_TABLE_LOCAL_NETWORK  = 97;
-const uint32_t ROUTE_TABLE_LEGACY_NETWORK = 98;
-const uint32_t ROUTE_TABLE_LEGACY_SYSTEM  = 99;
 
 const char* const ROUTE_TABLE_NAME_LOCAL_NETWORK  = "local_network";
-const char* const ROUTE_TABLE_NAME_LEGACY_NETWORK = "legacy_network";
-const char* const ROUTE_TABLE_NAME_LEGACY_SYSTEM  = "legacy_system";
 
 const char* const ROUTE_TABLE_NAME_LOCAL = "local";
 const char* const ROUTE_TABLE_NAME_MAIN  = "main";
@@ -215,8 +215,6 @@ void RouteController::updateTableNamesFile() {
     addTableName(RT_TABLE_MAIN,  ROUTE_TABLE_NAME_MAIN,  &contents);
 
     addTableName(ROUTE_TABLE_LOCAL_NETWORK,  ROUTE_TABLE_NAME_LOCAL_NETWORK,  &contents);
-    addTableName(ROUTE_TABLE_LEGACY_NETWORK, ROUTE_TABLE_NAME_LEGACY_NETWORK, &contents);
-    addTableName(ROUTE_TABLE_LEGACY_SYSTEM,  ROUTE_TABLE_NAME_LEGACY_SYSTEM,  &contents);
 
     std::lock_guard lock(sInterfaceToTableLock);
     for (const auto& [ifName, table] : sInterfaceToTable) {
@@ -736,32 +734,6 @@ int RouteController::modifyVpnFallthroughRule(uint16_t action, unsigned vpnNetId
                         mask.intValue);
 }
 
-// Add rules to allow legacy routes added through the requestRouteToHost() API.
-[[nodiscard]] static int addLegacyRouteRules() {
-    Fwmark fwmark;
-    Fwmark mask;
-
-    fwmark.explicitlySelected = false;
-    mask.explicitlySelected = true;
-
-    // Rules to allow legacy routes to override the default network.
-    if (int ret = modifyIpRule(RTM_NEWRULE, RULE_PRIORITY_LEGACY_SYSTEM, ROUTE_TABLE_LEGACY_SYSTEM,
-                               fwmark.intValue, mask.intValue)) {
-        return ret;
-    }
-    if (int ret = modifyIpRule(RTM_NEWRULE, RULE_PRIORITY_LEGACY_NETWORK,
-                               ROUTE_TABLE_LEGACY_NETWORK, fwmark.intValue, mask.intValue)) {
-        return ret;
-    }
-
-    fwmark.permission = PERMISSION_SYSTEM;
-    mask.permission = PERMISSION_SYSTEM;
-
-    // A rule to allow legacy routes from system apps to override VPNs.
-    return modifyIpRule(RTM_NEWRULE, RULE_PRIORITY_VPN_OVERRIDE_SYSTEM, ROUTE_TABLE_LEGACY_SYSTEM,
-                        fwmark.intValue, mask.intValue);
-}
-
 // Add rules to lookup the local network when specified explicitly or otherwise.
 [[nodiscard]] static int addLocalNetworkRules(unsigned localNetId) {
     if (int ret = modifyExplicitNetworkRule(localNetId, ROUTE_TABLE_LOCAL_NETWORK, PERMISSION_NONE,
@@ -1179,14 +1151,6 @@ int RouteController::modifyRoute(uint16_t action, uint16_t flags, const char* in
             table = ROUTE_TABLE_LOCAL_NETWORK;
             break;
         }
-        case RouteController::LEGACY_NETWORK: {
-            table = ROUTE_TABLE_LEGACY_NETWORK;
-            break;
-        }
-        case RouteController::LEGACY_SYSTEM: {
-            table = ROUTE_TABLE_LEGACY_SYSTEM;
-            break;
-        }
     }
 
     int ret = modifyIpRoute(action, flags, table, interface, destination, nexthop, mtu, priority);
@@ -1199,6 +1163,8 @@ int RouteController::modifyRoute(uint16_t action, uint16_t flags, const char* in
 }
 
 static void maybeModifyQdiscClsact(const char* interface, bool add) {
+    if (netflags::connectivity_service_modify_qdisc_clsact()) return;
+
     // The clsact attaching of v4- tun interface is triggered by ClatdController::maybeStartBpf
     // because the clat is started before the v4- interface is added to the network and the
     // clat startup needs to add {in, e}gress filters.
@@ -1300,9 +1266,6 @@ int RouteController::flushRoutes(const char* interface, bool local) {
 
 int RouteController::Init(unsigned localNetId) {
     if (int ret = flushRules()) {
-        return ret;
-    }
-    if (int ret = addLegacyRouteRules()) {
         return ret;
     }
     if (int ret = addLocalNetworkRules(localNetId)) {

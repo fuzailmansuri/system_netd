@@ -127,6 +127,10 @@ void NetlinkHandler::onEvent(NetlinkEvent *evt) {
             const char *flags = evt->findParam("FLAGS");
             const char *scope = evt->findParam("SCOPE");
             const char *ifIndex = evt->findParam("IFINDEX");
+            if (!address) {
+                ALOGE("Missing address in netlink address event");
+                return;
+            }
             char addrstr[INET6_ADDRSTRLEN + strlen("/128")];
             strlcpy(addrstr, address, sizeof(addrstr));
             char *slash = strchr(addrstr, '/');
@@ -137,6 +141,7 @@ void NetlinkHandler::onEvent(NetlinkEvent *evt) {
             long ifaceIndex = parseIfIndex(ifIndex);
             if (!ifaceIndex) {
                 ALOGE("invalid interface index: %s(%s)", iface, ifIndex);
+                return;
             }
             const bool addrUpdated = (action == NetlinkEvent::Action::kAddressUpdated);
             if (addrUpdated) {
@@ -200,12 +205,13 @@ void NetlinkHandler::onEvent(NetlinkEvent *evt) {
             notifyStrictCleartext(strtol(uid, nullptr, 10), hex);
         }
 
-    } else if (!strcmp(subsys, "xt_idletimer")) {
+    } else if (!strcmp(subsys, "xt_idletimer") &&
+               evt->getAction() == NetlinkEvent::Action::kChange) {
         const char *label = evt->findParam("INTERFACE");
         const char *state = evt->findParam("STATE");
         const char *timestamp = evt->findParam("TIME_NS");
         const char *uid = evt->findParam("UID");
-        if (state) {
+        if (label && state) {
             bool isActive = !strcmp("active", state);
             int64_t processTimestamp = (timestamp == nullptr) ? 0 : strtoll(timestamp, nullptr, 10);
             int intLabel;
